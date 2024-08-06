@@ -20,6 +20,7 @@ use crate::{
     utils::{amount_u64_to_string, get_clock, get_config, get_proof_with_authority, proof_pubkey},
     Miner,
 };
+use core_affinity;
 
 impl Miner {
     pub async fn mine(&self, args: MineArgs) {
@@ -44,14 +45,18 @@ impl Miner {
 
             // Run drillx
             let config = get_config(&self.rpc_client).await;
+            let mut min_difficulty = args.accepted_difficulty as u32;
+            if min_difficulty < config.min_difficulty as u32 {
+                min_difficulty = config.min_difficulty as u32;
+            }
             let solution = Self::find_hash_par(
                 proof,
                 cutoff_time,
                 args.threads,
-                config.min_difficulty as u32,
+                min_difficulty,
             )
             .await;
-
+            
             // Submit most difficult hash
             let mut compute_budget = 500_000;
             let mut ixs = vec![ore_api::instruction::auth(proof_pubkey(signer.pubkey()))];
@@ -68,6 +73,7 @@ impl Miner {
             self.send_and_confirm(&ixs, ComputeBudget::Fixed(compute_budget), false)
                 .await
                 .ok();
+            
         }
     }
 
@@ -80,15 +86,30 @@ impl Miner {
         // Dispatch job to each thread
         let progress_bar = Arc::new(spinner::new_progress_bar());
         progress_bar.set_message("Mining...");
-        let handles: Vec<_> = (0..threads)
-            .map(|i| {
-                std::thread::spawn({
-                    let proof = proof.clone();
-                    let progress_bar = progress_bar.clone();
-                    let mut memory = equix::SolverMemory::new();
-                    move || {
+        
+        // Retrieve the IDs of all cores on which the current
+        // thread is allowed to run.
+        // NOTE: If you want ALL the possible cores, you should
+        // use num_cpus.
+        let core_ids = core_affinity::get_core_ids().unwrap();
+
+        // Create a thread for each active CPU core.
+        // 绑定核心版本
+        let handles: Vec<_> = core_ids.into_iter()        .map(|id| {
+            let i = id.id;
+            std::thread::spawn({
+                let proof = proof.clone();
+                let progress_bar = progress_bar.clone();
+                let mut memory = equix::SolverMemory::new();
+                move || {
+                                
+                    // Pin this thread to a single CPU core.
+                    let res = core_affinity::set_for_current(id);
+                    if res {
+                        // 执行操作
+                            
                         let timer = Instant::now();
-                        let mut nonce = u64::MAX.saturating_div(threads).saturating_mul(i);
+                        let mut nonce = u64::MAX.saturating_div(threads).saturating_mul(i.try_into().unwrap());
                         let mut best_nonce = nonce;
                         let mut best_difficulty = 0;
                         let mut best_hash = Hash::default();
@@ -104,6 +125,7 @@ impl Miner {
                                     best_nonce = nonce;
                                     best_difficulty = difficulty;
                                     best_hash = hx;
+                                    // println!("当前线程下最优解: {}, nonce={}", best_difficulty, nonce);
                                 }
                             }
 
@@ -127,18 +149,75 @@ impl Miner {
                         }
 
                         // Return the best nonce
-                        (best_nonce, best_difficulty, best_hash)
+                        Some((best_nonce, best_difficulty, best_hash))
+                    } else {
+                        None
                     }
-                })
+                }
             })
-            .collect();
+        })
+        .collect();
+
+        // let handles: Vec<_> = (0..threads)
+        //     .map(|i| {
+        //         std::thread::spawn({
+        //             let proof = proof.clone();
+        //             let progress_bar = progress_bar.clone();
+        //             let mut memory = equix::SolverMemory::new();
+        //             move || {
+        //                 let timer = Instant::now();
+        //                 let mut nonce = u64::MAX.saturating_div(threads).saturating_mul(i);
+        //                 let mut best_nonce = nonce;
+        //                 let mut best_difficulty = 0;
+        //                 let mut best_hash = Hash::default();
+        //                 loop {
+        //                     // Create hash
+        //                     if let Ok(hx) = drillx::hash_with_memory(
+        //                         &mut memory,
+        //                         &proof.challenge,
+        //                         &nonce.to_le_bytes(),
+        //                     ) {
+        //                         let difficulty = hx.difficulty();
+        //                         if difficulty.gt(&best_difficulty) {
+        //                             best_nonce = nonce;
+        //                             best_difficulty = difficulty;
+        //                             best_hash = hx;
+        //                             // println!("当前线程下最优解: {}, nonce={}", best_difficulty, nonce);
+        //                         }
+        //                     }
+
+        //                     // Exit if time has elapsed
+        //                     if nonce % 100 == 0 {
+        //                         if timer.elapsed().as_secs().ge(&cutoff_time) {
+        //                             if best_difficulty.gt(&min_difficulty) {
+        //                                 // Mine until min difficulty has been met
+        //                                 break;
+        //                             }
+        //                         } else if i == 0 {
+        //                             progress_bar.set_message(format!(
+        //                                 "Mining... ({} sec remaining)",
+        //                                 cutoff_time.saturating_sub(timer.elapsed().as_secs()),
+        //                             ));
+        //                         }
+        //                     }
+
+        //                     // Increment nonce
+        //                     nonce += 1;
+        //                 }
+
+        //                 // Return the best nonce
+        //                 (best_nonce, best_difficulty, best_hash)
+        //             }
+        //         })
+        //     })
+        //     .collect();
 
         // Join handles and return best nonce
         let mut best_nonce = 0;
         let mut best_difficulty = 0;
         let mut best_hash = Hash::default();
         for h in handles {
-            if let Ok((nonce, difficulty, hash)) = h.join() {
+            if let Ok(Some((nonce, difficulty, hash))) = h.join() {
                 if difficulty > best_difficulty {
                     best_difficulty = difficulty;
                     best_nonce = nonce;
@@ -153,8 +232,8 @@ impl Miner {
             bs58::encode(best_hash.h).into_string(),
             best_difficulty
         ));
-
-        Solution::new(best_hash.d, best_nonce.to_le_bytes())
+        return Solution::new(best_hash.d, best_nonce.to_le_bytes())
+        
     }
 
     pub fn check_num_cores(&self, threads: u64) {
