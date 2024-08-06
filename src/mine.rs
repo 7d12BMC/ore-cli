@@ -103,6 +103,7 @@ impl Miner {
         min_difficulty: u32,
         // force_submit: bool,
     ) -> Option<Solution> {
+        let min_time = 55;
         // Dispatch job to each thread
         let progress_bar = Arc::new(spinner::new_progress_bar());
         progress_bar.set_message(format!("Mining, min_difficulty: {}, cutoff_time: {}...", min_difficulty, cutoff_time));
@@ -139,7 +140,7 @@ impl Miner {
                         loop {
                             let global_best_difficulty= quit_signal_clone.load(std::sync::atomic::Ordering::Acquire);
                             // 如果全局最佳难度大于最小提交难度，退出
-                            if global_best_difficulty > min_difficulty && timer.elapsed().as_secs() > 30 {
+                            if global_best_difficulty > min_difficulty && timer.elapsed().as_secs() > min_time {
                                 // Return the best nonce
                                 // println!("收到退出信号");
                                 break;
@@ -160,7 +161,7 @@ impl Miner {
                                     best_hash = hx;
                                     quit_signal_clone.store(best_difficulty, std::sync::atomic::Ordering::Release);
                                     // 如果最佳难度大于最小提交难度，那么当前线程完成任务，并且标记本地全局最大难度
-                                    if difficulty > min_difficulty && timer.elapsed().as_secs() > 30 {
+                                    if difficulty > min_difficulty && timer.elapsed().as_secs() > min_time {
                                         // global_best_difficulty = best_difficulty;
                                         break;
                                     }
