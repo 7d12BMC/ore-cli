@@ -80,11 +80,33 @@ pub struct MineArgs {
     #[arg(
         long,
         short,
+        value_name = "强制提交",
+        help = "当超过BufferTime时，即便还没有算出适合解，依然提交当前最优解",
+        default_value = "false"
+    )]
+    pub force_submit: bool,
+    
+    #[arg(
+        long,
+        short,
         value_name = "ACCEPTED_DIFFICULTY",
         help = "The minimal difficulty for submitting solution",
         default_value = "2"
     )]
     pub accepted_difficulty: u64,
+    #[arg(
+        long,
+        value_name = "AMOUNT",
+        help = "指定到该ORE资金量后Claim"
+    )]
+    pub amount: Option<f64>,
+
+    #[arg(
+        long,
+        value_name = "WALLET_ADDRESS",
+        help = "提出币的地址"
+    )]
+    pub to: Option<String>,
 }
 
 #[derive(Parser, Debug)]
